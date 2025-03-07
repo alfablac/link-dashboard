@@ -1,5 +1,5 @@
 # app.py  
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
 import os
 import logging
 import threading
@@ -74,16 +74,29 @@ def add_link():
         if not url:
             return jsonify({"error": "URL cannot be empty"}), 400
 
+            # Check if link already exists
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM links WHERE url = ?", (url,))
+        existing = cursor.fetchone()
+
+        if existing:
+            # Link already exists, flash message and redirect
+            flash(f"This link already exists in the database.", "warning")
+            return redirect(url_for('index'))
+
             # Add link to database
         link_id = db.add_link(url)
 
         # Extract metadata immediately in a non-blocking way
         threading.Thread(target=worker.extract_metadata, args=(url, link_id)).start()
 
+        flash(f"Link added successfully.", "success")
         return redirect(url_for('index'))
     except Exception as e:
         logger.error(f"Error adding link: {e}")
-        return jsonify({"error": str(e)}), 500
+        flash(f"Error adding link: {str(e)}", "danger")
+        return redirect(url_for('index'))
 
 
 @app.route('/delete_link/<int:link_id>', methods=['POST'])
