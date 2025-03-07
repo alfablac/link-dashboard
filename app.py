@@ -23,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.secret_key = ''
 db = Database()
 worker = LinkWorker()
 
@@ -74,30 +75,46 @@ def add_link():
         if not url:
             return jsonify({"error": "URL cannot be empty"}), 400
 
+            # Check if the URL contains a directory listing and extract direct links
+        links_to_add = worker.check_and_extract_links(url)
+
+        # Keep track of how many links were successfully added
+        added_count = 0
+        duplicate_count = 0
+
+        for link_url in links_to_add:
             # Check if link already exists
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM links WHERE url = ?", (url,))
-        existing = cursor.fetchone()
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM links WHERE url = ?", (link_url,))
+            existing = cursor.fetchone()
 
-        if existing:
-            # Link already exists, flash message and redirect
-            flash(f"This link already exists in the database.", "warning")
-            return redirect(url_for('index'))
+            if existing:
+                # Link already exists, skip it
+                duplicate_count += 1
+                logger.info(f"Skipping duplicate link: {link_url}")
+                continue
 
-            # Add link to database
-        link_id = db.add_link(url)
+                # Add link to database
+            link_id = db.add_link(link_url)
+            added_count += 1
 
-        # Extract metadata immediately in a non-blocking way
-        threading.Thread(target=worker.extract_metadata, args=(url, link_id)).start()
+            # Extract metadata immediately in a non-blocking way
+            threading.Thread(target=worker.extract_metadata, args=(link_url, link_id)).start()
 
-        flash(f"Link added successfully.", "success")
+            # Create appropriate flash message
+        if added_count > 0 and duplicate_count > 0:
+            flash(f"Added {added_count} new links. Skipped {duplicate_count} duplicate links.", "success")
+        elif added_count > 0:
+            flash(f"Added {added_count} new links successfully.", "success")
+        else:
+            flash(f"No new links added. All {duplicate_count} links already exist in the database.", "warning")
+
         return redirect(url_for('index'))
     except Exception as e:
         logger.error(f"Error adding link: {e}")
         flash(f"Error adding link: {str(e)}", "danger")
         return redirect(url_for('index'))
-
 
 @app.route('/delete_link/<int:link_id>', methods=['POST'])
 def delete_link(link_id):

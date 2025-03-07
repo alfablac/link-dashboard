@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from db_models import Database
 from curl_cffi import requests as curl_requests
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,84 @@ class LinkWorker:
             times.append(access_time)
 
         return sorted(times)
+
+    def check_and_extract_links(self, url):
+        """
+        Check if URL contains a table with class="fs" and extract direct links.
+        Returns a list of links. If no fs table, returns a list with just the original URL.
+        """
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+                "Accept": "*/*",
+                "Accept-Language": "pt-BR,pt;q=0.8,en-US;q=0.5,en;q=0.3",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache",
+                "TE": "trailers",
+            }
+
+            logger.info(f"Checking URL for directory listing: {url}")
+
+            # Visit the page
+            session = curl_requests.Session()
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=30,
+                impersonate="firefox135"
+            )
+
+            # Parse the HTML
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Check if there's a table with class="fs"
+            fs_table = soup.find('table', class_='fs')
+
+            if fs_table:
+                logger.info(f"Found directory listing table in {url}")
+
+                # Find all links with target="_blank" and non-empty href
+                direct_links = []
+                for link in fs_table.find_all('a', target='_blank', href=True):
+                    href = link.get('href')
+                    if href and not href.startswith('#') and not href == '/':
+                        # Make sure the URL is absolute
+                        if not href.startswith('http'):
+                            # Parse the original URL to get the base
+                            parsed_url = urlparse(url)
+                            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+                            # If href starts with /, it's relative to the domain root
+                            if href.startswith('/'):
+                                full_url = f"{base_url}{href}"
+                            else:
+                                # Otherwise it's relative to the current path
+                                path_parts = parsed_url.path.split('/')
+                                # Remove the last part if it's not empty
+                                if path_parts[-1]:
+                                    path_parts = path_parts[:-1]
+                                base_path = '/'.join(path_parts)
+                                full_url = f"{base_url}{base_path}/{href}"
+
+                            direct_links.append(full_url)
+                        else:
+                            direct_links.append(href)
+
+                if direct_links:
+                    logger.info(f"Extracted {len(direct_links)} direct links from {url}")
+                    return direct_links
+
+                    # If no fs table or no links found, return the original URL
+            return [url]
+        except Exception as e:
+            logger.error(f"Error checking URL {url}: {e}")
+            # Return the original URL if there's an error
+            return [url]
 
     def extract_metadata(self, url, link_id=None):
         """Extract filename and file details from the link page"""
