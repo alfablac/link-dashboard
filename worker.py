@@ -9,62 +9,35 @@ from db_models import Database
 from curl_cffi import requests as curl_requests
 from bs4 import BeautifulSoup
 
+
 logger = logging.getLogger(__name__)
 
 
 class LinkWorker:
     def __init__(self):
         self.db = Database()
-        # Get proxies using Oxylabs session generation
+        # Get proxies from hardcoded list
         self.proxies = self._get_proxies()
         if not self.proxies:
-            logger.warning("No proxies were generated. Check Oxylabs configuration.")
-
-    def _generate_oxylabs_proxies(self, count=20):
-        """Generate Oxylabs session-based proxies"""
-        proxies = []
-
-        # Oxylabs username and password (replace these with actual credentials)
-        username = "USUARIO"  # Your Oxylabs username
-        password = "PASSWORD"  # Your Oxylabs password
-
-        # Supported country codes by Oxylabs (shortened list - expand as needed)
-        countries = [
-            "us", "uk", "ca", "au", "de", "fr", "jp", "br", "in", "it",
-            "es", "nl", "se", "sg", "mx", "kr", "ch", "no", "fi", "dk"
-        ]
-
-        # Generate proxies
-        for _ in range(count):
-            # Generate a random session ID based on current time plus some randomization
-            now = datetime.now()
-            # Format: MMDDHHMMSS (month, day, hour, minute, second)
-            session_id = now.strftime("%m%d%H%M%S")
-
-            # Add small random number to ensure uniqueness if generating multiple in same second
-            random_suffix = str(random.randint(10, 99))
-            session_id = session_id + random_suffix
-
-            # Select a random country
-            country = random.choice(countries)
-
-            # Set session time (in minutes)
-            session_time = 10  # 10 minutes session
-
-            # Format the Oxylabs proxy URL
-            proxy_url = f"http://{username}-cc-{country}-sessid-{session_id}-sesstime-{session_time}:{password}@pr.oxylabs.io:7777"
-
-            proxies.append(proxy_url)
-            logger.info(f"Generated Oxylabs proxy with session ID {session_id} for country {country}")
-
-        return proxies
-
-        # Replace the old _get_proxies_from_env method with this new one
+            logger.warning("No proxies were loaded from the list.")
 
     def _get_proxies(self):
-        """Get proxies for use with links"""
-        # Generate 20 Oxylabs proxies by default
-        return self._generate_oxylabs_proxies(100)
+        """Get proxies from HTTP_PROXIES environment variable"""
+        try:
+            proxy_string = os.environ.get('HTTP_PROXIES', '')
+            if not proxy_string:
+                logger.warning("HTTP_PROXIES environment variable is not set")
+                return []
+
+                # Split the string into individual proxies
+            # Handles both comma-separated and newline-separated formats
+            proxies = [p.strip() for p in proxy_string.replace('\n', ',').split(',') if p.strip()]
+
+            logger.info(f"Loaded {len(proxies)} proxies from HTTP_PROXIES environment variable")
+            return proxies
+        except Exception as e:
+            logger.error(f"Error parsing HTTP_PROXIES: {e}")
+            return []
 
     def _calculate_access_times(self, start_date, end_date, total_accesses=100):
         """
@@ -189,12 +162,13 @@ class LinkWorker:
             proxy = random.choice(unused_proxies)
             proxies = {"http": proxy, "https": proxy}
             logger.info(f"Using unused proxy {proxy} for link ID {link_id}")
-        else:
-            # If all proxies have been used, generate a new Oxylabs session
-            new_proxy = self._generate_oxylabs_proxies(1)[0]
-            proxy = new_proxy
+        elif self.proxies:
+            # If all proxies have been used, reuse one of the existing proxies
+            proxy = random.choice(self.proxies)
             proxies = {"http": proxy, "https": proxy}
-            logger.info(f"Generated fresh Oxylabs proxy for link ID {link_id}")
+            logger.warning(f"All proxies have been used for link ID {link_id} in this cycle. Reusing {proxy}")
+        else:
+            logger.warning(f"No proxies available for link ID {link_id}. Using direct connection.")
 
         try:
             headers = {

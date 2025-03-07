@@ -8,6 +8,8 @@ import sqlite3
 from datetime import datetime
 from db_models import Database
 from worker import LinkWorker
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
 
 # Configure logging
 logging.basicConfig(
