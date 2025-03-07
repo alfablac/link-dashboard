@@ -1,0 +1,334 @@
+# worker.py  
+import random
+import time
+import os
+import math
+import logging
+from datetime import datetime, timedelta
+from db_models import Database
+from curl_cffi import requests as curl_requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+
+class LinkWorker:
+    def __init__(self):
+        self.db = Database()
+        # Get proxies using Oxylabs session generation
+        self.proxies = self._get_proxies()
+        if not self.proxies:
+            logger.warning("No proxies were generated. Check Oxylabs configuration.")
+
+    def _generate_oxylabs_proxies(self, count=20):
+        """Generate Oxylabs session-based proxies"""
+        proxies = []
+
+        # Oxylabs username and password (replace these with actual credentials)
+        username = "USUARIO"  # Your Oxylabs username
+        password = "PASSWORD"  # Your Oxylabs password
+
+        # Supported country codes by Oxylabs (shortened list - expand as needed)
+        countries = [
+            "us", "uk", "ca", "au", "de", "fr", "jp", "br", "in", "it",
+            "es", "nl", "se", "sg", "mx", "kr", "ch", "no", "fi", "dk"
+        ]
+
+        # Generate proxies
+        for _ in range(count):
+            # Generate a random session ID based on current time plus some randomization
+            now = datetime.now()
+            # Format: MMDDHHMMSS (month, day, hour, minute, second)
+            session_id = now.strftime("%m%d%H%M%S")
+
+            # Add small random number to ensure uniqueness if generating multiple in same second
+            random_suffix = str(random.randint(10, 99))
+            session_id = session_id + random_suffix
+
+            # Select a random country
+            country = random.choice(countries)
+
+            # Set session time (in minutes)
+            session_time = 10  # 10 minutes session
+
+            # Format the Oxylabs proxy URL
+            proxy_url = f"http://{username}-cc-{country}-sessid-{session_id}-sesstime-{session_time}:{password}@pr.oxylabs.io:7777"
+
+            proxies.append(proxy_url)
+            logger.info(f"Generated Oxylabs proxy with session ID {session_id} for country {country}")
+
+        return proxies
+
+        # Replace the old _get_proxies_from_env method with this new one
+
+    def _get_proxies(self):
+        """Get proxies for use with links"""
+        # Generate 20 Oxylabs proxies by default
+        return self._generate_oxylabs_proxies(100)
+
+    def _calculate_access_times(self, start_date, end_date, total_accesses=100):
+        """
+        Calculate access times using an exponential function
+        More frequent at the beginning, less frequent at the end
+        """
+        total_seconds = (end_date - start_date).total_seconds()
+
+        # Generate exponentially distributed points
+        times = []
+        for i in range(total_accesses):
+            # Exponential distribution factor (higher means more skewed to beginning)
+            factor = 3.0
+            x = i / (total_accesses - 1)  # Normalized index (0 to 1)
+            y = (1 - math.exp(-factor * (1 - x))) / (1 - math.exp(-factor))
+
+            # Calculate seconds from start
+            seconds_from_start = y * total_seconds
+            access_time = start_date + timedelta(seconds=seconds_from_start)
+            times.append(access_time)
+
+        return sorted(times)
+
+    def extract_metadata(self, url, link_id=None):
+        """Extract filename and file details from the link page"""
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+                "Accept": "*/*",
+                "Accept-Language": "pt-BR,pt;q=0.8,en-US;q=0.5,en;q=0.3",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache",
+                "TE": "trailers",
+            }
+
+            logger.info(f"Extracting metadata from URL: {url}")
+
+            # Visit the page
+            session = curl_requests.Session()
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=30,
+                impersonate="firefox135"
+            )
+
+            # Parse the HTML and find metadata
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Extract filename from span with class "text-2xl"
+            filename_span = soup.find('span', class_='text-2xl')
+            filename = filename_span.get_text().strip() if filename_span else "Unknown Filename"
+
+            # Extract file details from the 3rd list item sibling to this span
+            file_details = "No details available"
+            if filename_span:
+                # Find the parent element and then the ul tag
+                parent = filename_span.parent
+                ul_tag = parent.find('ul')
+                if ul_tag:
+                    # Get the 3rd list item
+                    li_items = ul_tag.find_all('li')
+                    if len(li_items) >= 3:
+                        file_details = li_items[2].get_text().strip()
+
+            logger.info(f"Extracted filename: '{filename}' and details: '{file_details}'")
+
+            # Store the data if link_id is provided
+            if link_id:
+                self.db.update_link_info(link_id, filename, file_details)
+
+            return {"filename": filename, "file_details": file_details}
+
+        except Exception as e:
+            logger.error(f"Error extracting metadata from {url}: {e}")
+            return {"filename": "Error extracting", "file_details": str(e)}
+
+    def schedule_link_accesses(self, link_id, url):
+        """
+        Schedule accesses for a link over current 45 days cycle
+        Returns a list of datetime objects when the link should be accessed
+        """
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""  
+            SELECT current_cycle_start, current_cycle_end   
+            FROM links   
+            WHERE id = ?  
+        """, (link_id,))
+
+        link_data = cursor.fetchone()
+
+        if not link_data:
+            logger.error(f"Link ID {link_id} not found in database")
+            return []
+
+        start_date = datetime.strptime(link_data['current_cycle_start'], '%Y-%m-%d %H:%M:%S.%f')
+        end_date = datetime.strptime(link_data['current_cycle_end'], '%Y-%m-%d %H:%M:%S.%f')
+
+        # Calculate the next 100 access times for this cycle
+        access_times = self._calculate_access_times(start_date, end_date)
+
+        logger.info(f"Scheduled {len(access_times)} accesses for link {url} (ID: {link_id})")
+        return access_times
+
+    def access_link(self, link_id, url):
+        """Access a link and follow the download button with proxy rotation"""
+        # Get proxies that haven't been used for this link in the current cycle
+        unused_proxies = self.db.get_unused_proxies_for_link(link_id)
+
+        # Choose a proxy
+        proxy = None
+        proxies = None
+
+        if unused_proxies:
+            proxy = random.choice(unused_proxies)
+            proxies = {"http": proxy, "https": proxy}
+            logger.info(f"Using unused proxy {proxy} for link ID {link_id}")
+        else:
+            # If all proxies have been used, generate a new Oxylabs session
+            new_proxy = self._generate_oxylabs_proxies(1)[0]
+            proxy = new_proxy
+            proxies = {"http": proxy, "https": proxy}
+            logger.info(f"Generated fresh Oxylabs proxy for link ID {link_id}")
+
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+                "Accept": "*/*",
+                "Accept-Language": "pt-BR,pt;q=0.8,en-US;q=0.5,en;q=0.3",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache",
+                "TE": "trailers",
+            }
+
+            # Add some randomization to appear more human-like
+            time.sleep(random.uniform(1, 3))
+
+            logger.info(f"Accessing URL: {url}")
+
+            # Step 1: Visit the main page
+            session = curl_requests.Session()
+            if proxies:
+                session.proxies = proxies
+
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=30,
+                impersonate="firefox135"
+            )
+
+            # Step 2: Parse the HTML and find the download button and file information
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Extract filename from span with class "text-2xl"
+            filename_span = soup.find('span', class_='text-2xl')
+            filename = filename_span.get_text().strip() if filename_span else "Unknown Filename"
+
+            # Extract file details from the 3rd list item sibling to this span
+            file_details = "No details available"
+            if filename_span:
+                # Find the parent element and then the ul tag
+                parent = filename_span.parent
+                ul_tag = parent.find('ul')
+                if ul_tag:
+                    # Get the 3rd list item
+                    li_items = ul_tag.find_all('li')
+                    if len(li_items) >= 3:
+                        file_details = li_items[2].get_text().strip()
+
+                        # Store the filename and file details in the database
+            self.db.update_link_info(link_id, filename, file_details)
+            logger.info(f"Extracted filename: '{filename}' and details: '{file_details}'")
+
+            # Find the download button
+            download_button = soup.find('a', class_=lambda c: c and 'link-button' in c and 'gay-button' in c)
+
+            if not download_button:
+                logger.error(f"Could not find download button on {url}")
+                self.db.log_access(link_id, proxy, response.status_code, "Download button not found")
+                return False
+
+            download_url = download_button.get('hx-get')
+            if not download_url:
+                logger.error(f"Download button found but no href attribute on {url}")
+                self.db.log_access(link_id, proxy, response.status_code, "No href in download button")
+                return False
+
+                # Make sure the URL is absolute
+            if not download_url.startswith('http'):
+                if download_url.startswith('/'):
+                    # Extract domain from original URL
+                    parts = url.split('/')
+                    base_url = f"{parts[0]}//{parts[2]}"
+                    download_url = base_url + download_url
+                else:
+                    # Relative URL, append to the path
+                    download_url = url + '/' + download_url
+
+            logger.info(f"Found download URL: {download_url}")
+
+            # Step 3: Follow the download button but don't download the file
+            # We'll just send a HEAD request to register the click
+            time.sleep(random.uniform(2, 5))  # Simulate human delay
+            session.headers["Referer"] = url
+            response = session.get(
+                download_url,
+                headers=headers,
+                timeout=30,
+                impersonate="firefox135",
+                stream=True
+            )
+            response.close()
+
+            # Log the access
+            self.db.log_access(link_id, proxy, response.status_code)
+            logger.info(f"Successfully accessed download link for {url}, status code: {response.status_code}")
+
+            return True
+        except Exception as e:
+            logger.error(f"Error accessing {url}: {e}")
+            self.db.log_access(link_id, proxy, None, str(e))
+            return False
+
+    def process_pending_accesses(self):
+        """Check and process any links that need to be accessed now"""
+        try:
+            active_links = self.db.get_active_links()
+            now = datetime.now()
+
+            for link in active_links:
+                # Only process links that haven't completed their 100 accesses for the current cycle
+                if link['current_period_views'] < 100:
+                    # Schedule accesses if not already done
+                    # In a real application, this would be persisted in the database
+                    # For simplicity, we're calculating on the fly here
+                    start_date = datetime.strptime(link['current_cycle_start'], '%Y-%m-%d %H:%M:%S.%f')
+                    end_date = datetime.strptime(link['current_cycle_end'], '%Y-%m-%d %H:%M:%S.%f')
+
+                    # Calculate access times for this cycle
+                    access_times = self._calculate_access_times(start_date, end_date)
+
+                    # Find the next scheduled access (the first one that's after the current views count)
+                    if link['current_period_views'] < len(access_times):
+                        next_access_time = access_times[link['current_period_views']]
+
+                        # If it's time to access the link
+                        if next_access_time <= now:
+                            logger.info(
+                                f"Time to access link {link['url']} (ID: {link['id']}), views: {link['current_period_views']} in cycle {link['current_cycle']}")
+                            self.access_link(link['id'], link['url'])
+
+            logger.info("Completed processing pending accesses")
+        except Exception as e:
+            logger.error(f"Error in process_pending_accesses: {e}")

@@ -1,0 +1,58 @@
+{% extends "layout.html" %}  
+
+{% block content %}  
+<div class="row">  
+    <div class="col-md-12">  
+        <div class="card">  
+            <div class="card-header">  
+                <h3>Execute SQL Query</h3>  
+            </div>  
+            <div class="card-body">  
+                <form method="post">  
+                    <div class="mb-3">  
+                        <textarea class="form-control" name="query" rows="5" placeholder="Enter SQL query here...">{{ query }}</textarea>  
+                    </div>  
+                    <button type="submit" class="btn btn-primary">Execute</button>  
+                </form>  
+                
+                {% if error %}  
+                <div class="alert alert-danger mt-3">  
+                    <h5>Error:</h5>  
+                    <pre>{{ error }}</pre>  
+                </div>  
+                {% endif %}  
+                
+                {% if result %}  
+                <div class="mt-4">  
+                    <h4>Results:</h4>  
+                    {% if result is mapping %}  
+                        <div class="alert alert-success">{{ result.message }} ({{ result.rows_affected }} rows affected)</div>  
+                    {% else %}  
+                        <div class="table-responsive">  
+                            <table class="table table-striped">  
+                                <thead>  
+                                    <tr>  
+                                        {% for key in result[0].keys() %}  
+                                            <th>{{ key }}</th>  
+                                        {% endfor %}  
+                                    </tr>  
+                                </thead>  
+                                <tbody>  
+                                    {% for row in result %}  
+                                        <tr>  
+                                            {% for value in row.values() %}  
+                                                <td>{{ value }}</td>  
+                                            {% endfor %}  
+                                        </tr>  
+                                    {% endfor %}  
+                                </tbody>  
+                            </table>  
+                        </div>  
+                    {% endif %}  
+                </div>  
+                {% endif %}  
+            </div>  
+        </div>  
+    </div>  
+</div>  
+{% endblock %}
