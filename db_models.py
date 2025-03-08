@@ -55,7 +55,7 @@ class Database:
             cursor.execute("PRAGMA table_info(links)")
             columns = [column[1] for column in cursor.fetchall()]
 
-            # Add new columns if they don't exist
+            # Add new columns if they don't exist (existing code)
             if "filename" not in columns:
                 cursor.execute("ALTER TABLE links ADD COLUMN filename TEXT")
                 logger.info("Added filename column to links table")
@@ -81,44 +81,9 @@ class Database:
                     "UPDATE links SET current_cycle_end = datetime(date_added, '+45 days') WHERE current_cycle_end IS NULL")
                 logger.info("Added current_cycle_end column to links table")
 
-                # Drop end_date column if it exists (we're replacing with cycle-based approach)
-            if "end_date" in columns:
-                # SQLite doesn't support DROP COLUMN directly, so we need to do a workaround
-                # Create a temporary table with the new schema
-                cursor.execute('''  
-                CREATE TABLE links_temp (  
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,  
-                    url TEXT UNIQUE NOT NULL,  
-                    date_added TIMESTAMP NOT NULL,  
-                    current_cycle_start TIMESTAMP NOT NULL,  
-                    current_cycle_end TIMESTAMP NOT NULL,  
-                    total_views INTEGER DEFAULT 0,  
-                    current_period_views INTEGER DEFAULT 0,  
-                    current_cycle INTEGER DEFAULT 1,  
-                    active BOOLEAN DEFAULT 1,  
-                    filename TEXT,  
-                    file_details TEXT  
-                )  
-                ''')
+                # End of existing column checks
 
-                # Copy data from the old table to the new one
-                cursor.execute('''  
-                INSERT INTO links_temp(id, url, date_added, current_cycle_start, current_cycle_end,   
-                                      total_views, current_period_views, current_cycle, active, filename, file_details)  
-                SELECT id, url, date_added, current_cycle_start, current_cycle_end,  
-                       total_views, current_period_views, current_cycle, active, filename, file_details  
-                FROM links  
-                ''')
-
-                # Drop the old table
-                cursor.execute("DROP TABLE links")
-
-                # Rename the new table to the original name
-                cursor.execute("ALTER TABLE links_temp RENAME TO links")
-
-                logger.info("Removed end_date column and restructured links table")
-
-                # Create access logs table
+            # Create access logs table
             cursor.execute('''  
             CREATE TABLE IF NOT EXISTS access_logs (  
                 id INTEGER PRIMARY KEY AUTOINCREMENT,  
@@ -139,17 +104,73 @@ class Database:
                 cursor.execute("ALTER TABLE access_logs ADD COLUMN cycle INTEGER NOT NULL DEFAULT 1")
                 logger.info("Added cycle column to access_logs table")
 
-                # Create proxy usage table to track which proxies have been used for each link in each cycle
+                # Check if proxy_usage table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='proxy_usage'")
+            proxy_usage_exists = cursor.fetchone() is not None
+
+            if not proxy_usage_exists:
+                # Create proxy usage table with updated schema to include per-link cooldown tracking
+                cursor.execute('''  
+                CREATE TABLE IF NOT EXISTS proxy_usage (  
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,  
+                    link_id INTEGER NOT NULL,  
+                    proxy TEXT NOT NULL,  
+                    cycle INTEGER NOT NULL,  
+                    used_at TIMESTAMP NOT NULL,  
+                    FOREIGN KEY (link_id) REFERENCES links (id),  
+                    UNIQUE(link_id, proxy, cycle)  
+                )  
+                ''')
+                logger.info("Created proxy_usage table")
+            else:
+                # Check if the proxy_usage table has the required columns
+                cursor.execute("PRAGMA table_info(proxy_usage)")
+                columns = [column[1] for column in cursor.fetchall()]
+
+                if "used_at" not in columns:
+                    # Since SQLite doesn't support adding constraints to existing columns,
+                    # we need to recreate the table if it's missing the timestamp field
+                    # Temporarily rename the old table
+                    cursor.execute("ALTER TABLE proxy_usage RENAME TO proxy_usage_old")
+
+                    # Create the new table with the proper structure
+                    cursor.execute('''  
+                    CREATE TABLE proxy_usage (  
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,  
+                        link_id INTEGER NOT NULL,  
+                        proxy TEXT NOT NULL,  
+                        cycle INTEGER NOT NULL,  
+                        used_at TIMESTAMP NOT NULL,  
+                        FOREIGN KEY (link_id) REFERENCES links (id),  
+                        UNIQUE(link_id, proxy, cycle)  
+                    )  
+                    ''')
+
+                    # Copy data from old table with a default timestamp for existing records
+                    cursor.execute('''  
+                    INSERT INTO proxy_usage(link_id, proxy, cycle, used_at)  
+                    SELECT link_id, proxy, cycle, datetime('now', '-25 hours')   
+                    FROM proxy_usage_old  
+                    ''')
+
+                    # Drop the old table
+                    cursor.execute("DROP TABLE proxy_usage_old")
+                    logger.info("Updated proxy_usage table with used_at timestamp column")
+
+                    # Create indexes for better performance
             cursor.execute('''  
-            CREATE TABLE IF NOT EXISTS proxy_usage (  
-                id INTEGER PRIMARY KEY AUTOINCREMENT,  
-                link_id INTEGER NOT NULL,  
-                proxy TEXT NOT NULL,  
-                cycle INTEGER NOT NULL,  
-                used_at TIMESTAMP NOT NULL,  
-                FOREIGN KEY (link_id) REFERENCES links (id),  
-                UNIQUE(link_id, proxy, cycle)  
-            )  
+            CREATE INDEX IF NOT EXISTS idx_proxy_usage_link_id_used_at   
+            ON proxy_usage (link_id, used_at)  
+            ''')
+
+            cursor.execute('''  
+            CREATE INDEX IF NOT EXISTS idx_links_active   
+            ON links (active)  
+            ''')
+
+            cursor.execute('''  
+            CREATE INDEX IF NOT EXISTS idx_access_logs_link_id   
+            ON access_logs (link_id)  
             ''')
 
             conn.commit()
