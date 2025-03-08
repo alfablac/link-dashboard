@@ -40,7 +40,7 @@ class LinkWorker:
             logger.error(f"Error parsing HTTP_PROXIES: {e}")
             return []
 
-    def calculate_access_times(self, start_date, end_date, total_accesses=100):
+    def _calculate_access_times(self, start_date, end_date, total_accesses=100):
         """
         Calculate access times using a quadratic function
         More frequent at the beginning, less frequent at the end
