@@ -431,16 +431,35 @@ class Database:
             return False
 
     def record_proxy_usage(self, link_id, proxy_url):
-        """Record that a proxy was used for a specific link"""
+        """Record that a proxy was used for a specific link in the current cycle"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
+            # Get the current cycle for this link
+            cursor.execute("SELECT current_cycle FROM links WHERE id = ?", (link_id,))
+            link_data = cursor.fetchone()
+
+            if not link_data:
+                logger.error(f"Link ID {link_id} not found")
+                return False
+
+            current_cycle = link_data[0]
+
             # Record the proxy usage with timestamp
-            cursor.execute("""  
-                INSERT INTO proxy_usage (link_id, proxy_url, used_at)  
-                VALUES (?, ?, datetime('now'))  
-            """, (link_id, proxy_url))
+            try:
+                cursor.execute("""  
+                    INSERT INTO proxy_usage (link_id, proxy, cycle, used_at)  
+                    VALUES (?, ?, ?, datetime('now'))  
+                """, (link_id, proxy_url, current_cycle))
+            except sqlite3.IntegrityError:
+                # If there's a uniqueness constraint violation (proxy already used in this cycle),
+                # update the timestamp instead
+                cursor.execute("""  
+                    UPDATE proxy_usage  
+                    SET used_at = datetime('now')  
+                    WHERE link_id = ? AND proxy = ? AND cycle = ?  
+                """, (link_id, proxy_url, current_cycle))
 
             conn.commit()
             return True
