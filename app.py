@@ -67,6 +67,29 @@ def index():
     return render_template('index.html', links=active_links)
 
 
+@app.route('/status')
+def worker_status():
+    """Show worker thread status"""
+    # Get current active tasks
+    active_tasks = []
+    with worker.task_lock:
+        for task_id, future in worker.active_tasks.items():
+            active_tasks.append({
+                'id': task_id,
+                'status': 'Running' if not future.done() else 'Completed',
+                'start_time': getattr(future, 'start_time', 'Unknown')
+            })
+
+            # Get system stats
+    stats = {
+        'active_workers': len(worker.active_tasks),
+        'max_workers': worker.max_workers,
+        'proxies_loaded': len(worker.proxies),
+        'active_links': len(db.get_active_links())
+    }
+
+    return render_template('status.html', tasks=active_tasks, stats=stats)
+
 @app.route('/add_link', methods=['POST'])
 def add_link():
     """Add a new link and extract metadata immediately"""

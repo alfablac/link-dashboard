@@ -183,6 +183,81 @@ class Database:
             logger.error(f"Error adding link: {e}")
             raise
 
+    def increment_link_views(self, link_id):
+        """
+        Increment the view count for a link.
+        If current_period_views reaches 100, increment cycle and reset views.
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            # First, get the current link information
+            cursor.execute("""  
+                SELECT current_period_views, current_cycle, current_cycle_end   
+                FROM links   
+                WHERE id = ?  
+            """, (link_id,))
+
+            link_data = cursor.fetchone()
+            if not link_data:
+                logger.error(f"Failed to increment views: Link ID {link_id} not found")
+                return False
+
+            current_views = link_data['current_period_views']
+            current_cycle = link_data['current_cycle']
+            cycle_end = datetime.strptime(link_data['current_cycle_end'], '%Y-%m-%d %H:%M:%S.%f') if link_data[
+                'current_cycle_end'] else None
+
+            # Check if we need to start a new cycle (current cycle ended)
+            now = datetime.now()
+            if cycle_end and now > cycle_end:
+                # Start a new cycle
+                new_cycle_start = now
+                new_cycle_end = now + timedelta(days=60)  # 60-day cycle
+
+                cursor.execute("""  
+                    UPDATE links   
+                    SET current_cycle = ?,   
+                        current_period_views = 1,  
+                        total_views = total_views + 1,  
+                        current_cycle_start = ?,  
+                        current_cycle_end = ?  
+                    WHERE id = ?  
+                """, (current_cycle + 1, new_cycle_start, new_cycle_end, link_id))
+
+                logger.info(f"Started new cycle {current_cycle + 1} for link ID {link_id}")
+
+                # Regular increment within current cycle
+            else:
+                new_views = current_views + 1
+
+                # Check if we've completed all 100 views for this cycle
+                if new_views >= 100:
+                    # When reaching 100 views, mark cycle as completed but keep the end date
+                    cursor.execute("""  
+                        UPDATE links   
+                        SET current_period_views = ?,  
+                            total_views = total_views + 1  
+                        WHERE id = ?  
+                    """, (new_views, link_id))
+                    logger.info(f"Completed all 100 views for link ID {link_id} in cycle {current_cycle}")
+                else:
+                    # Normal increment
+                    cursor.execute("""  
+                        UPDATE links   
+                        SET current_period_views = ?,  
+                            total_views = total_views + 1  
+                        WHERE id = ?  
+                    """, (new_views, link_id))
+                    logger.info(f"Incremented views for link ID {link_id} to {new_views} in cycle {current_cycle}")
+
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error incrementing views for link ID {link_id}: {e}")
+            return False
+
     def delete_link(self, link_id):
         """Delete a link and its associated access logs and proxy usage records"""
         try:
@@ -334,56 +409,50 @@ class Database:
             conn.rollback()
             return False
 
-    def get_unused_proxies_for_link(self, link_id):
-        """Get proxies that haven't been used for this link in the current cycle"""
+    def record_proxy_usage(self, link_id, proxy_url):
+        """Record that a proxy was used for a specific link"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
-            # Get the current cycle for this link
-            cursor.execute("SELECT current_cycle FROM links WHERE id = ?", (link_id,))
-            result = cursor.fetchone()
-            if not result:
-                logger.error(f"Attempted to get proxies for non-existent link ID {link_id}")
-                return []
+            # Record the proxy usage with timestamp
+            cursor.execute("""  
+                INSERT INTO proxy_usage (link_id, proxy_url, used_at)  
+                VALUES (?, ?, datetime('now'))  
+            """, (link_id, proxy_url))
 
-            current_cycle = result['current_cycle']
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error recording proxy usage: {e}")
+            return False
 
-            # Get all proxies from environment variables
-            all_proxies = []
-            i = 1
-            while True:
-                proxy_var = f"HTTP_PROXY_{i}"
-                if proxy_var in os.environ:
-                    proxy_url = os.environ[proxy_var]
-                    all_proxies.append(proxy_url)
-                    i += 1
-                else:
-                    break
+    def get_unused_proxies_for_link(self, link_id, all_proxies, cooldown_hours=24):
+        """Get proxies that haven't been used for this link within the cooldown period"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
 
-            if not all_proxies:
-                logger.warning("No proxies found in environment variables")
-                return []
+            # Get proxies used for this link within the cooldown period
+            cursor.execute("""  
+                SELECT proxy_url FROM proxy_usage  
+                WHERE link_id = ? AND used_at > datetime('now', ?)  
+            """, (link_id, f'-{cooldown_hours} hours'))
 
-                # Get proxies already used for this link in this cycle
-            cursor.execute(
-                "SELECT proxy FROM proxy_usage WHERE link_id = ? AND cycle = ?",
-                (link_id, current_cycle)
-            )
-            used_proxies = [row['proxy'] for row in cursor.fetchall()]
+            used_proxies = {row['proxy_url'] for row in cursor.fetchall()}
 
-            # Return proxies that haven't been used yet
+            # Return proxies that haven't been used within the cooldown period
             unused_proxies = [proxy for proxy in all_proxies if proxy not in used_proxies]
 
-            # If all proxies have been used, log a warning
             if not unused_proxies:
-                logger.warning(f"All proxies have been used for link ID {link_id} in cycle {current_cycle}")
-                # In a real system, you might want to handle this differently
+                logger.warning(f"All proxies have been used for link {link_id} within the past {cooldown_hours} hours")
+                # If all are used, return all proxies - we'll have to reuse one
+                return all_proxies
 
             return unused_proxies
         except Exception as e:
             logger.error(f"Error getting unused proxies: {e}")
-            return []
+            return all_proxies  # Return all proxies in case of error
 
     def execute_raw_query(self, query):
         """Execute a raw SQL query and return results"""

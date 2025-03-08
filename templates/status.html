@@ -1,0 +1,142 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h3>System Status</h3>
+                <button id="refreshBtn" class="btn btn-sm btn-outline-primary">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card mb-3">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="mb-0">Worker Statistics</h5>
+                            </div>
+                            <div class="card-body">
+                                <ul class="list-group">
+                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                        Active Worker Threads:
+                                        <span class="badge bg-primary rounded-pill">{{ stats.active_workers }}</span>
+                                    </li>
+                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                        Maximum Worker Threads:
+                                        <span class="badge bg-secondary rounded-pill">{{ stats.max_workers }}</span>
+                                    </li>
+                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                        Proxies Loaded:
+                                        <span class="badge bg-info rounded-pill">{{ stats.proxies_loaded }}</span>
+                                    </li>
+                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                        Active Links:
+                                        <span class="badge bg-success rounded-pill">{{ stats.active_links }}</span>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header bg-info text-white">
+                                <h5 class="mb-0">System Information</h5>
+                            </div>
+                            <div class="card-body">
+                                <ul class="list-group">
+                                    <li class="list-group-item">
+                                        <strong>Current Time:</strong> {{ now|format_datetime }}
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>System Status:</strong>
+                                        {% if stats.active_workers < stats.max_workers %}
+                                            <span class="text-success">Available</span>
+                                        {% else %}
+                                            <span class="text-warning">Busy</span>
+                                        {% endif %}
+                                    </li>
+                                    <li class="list-group-item">
+                                        <strong>Thread Utilization:</strong>
+                                        <div class="progress mt-2">
+                                            <div class="progress-bar
+                                                {% if stats.active_workers / stats.max_workers < 0.7 %}bg-success
+                                                {% elif stats.active_workers / stats.max_workers < 0.9 %}bg-warning
+                                                {% else %}bg-danger{% endif %}"
+                                                role="progressbar"
+                                                style="width: {{ (stats.active_workers / stats.max_workers * 100)|round }}%;"
+                                                aria-valuenow="{{ stats.active_workers }}"
+                                                aria-valuemin="0" aria-valuemax="{{ stats.max_workers }}">
+                                                {{ (stats.active_workers / stats.max_workers * 100)|round }}%
+                                            </div>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <h3>Active Worker Tasks</h3>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Task ID</th>
+                                <th>Status</th>
+                                <th>Start Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if tasks %}
+                                {% for task in tasks %}
+                                <tr>
+                                    <td>{{ task.id }}</td>
+                                    <td>
+                                        {% if task.status == 'Running' %}
+                                            <span class="badge bg-success">Running</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">Completed</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ task.start_time }}</td>
+                                </tr>
+                                {% endfor %}
+                            {% else %}
+                                <tr>
+                                    <td colspan="3" class="text-center">No active tasks</td>
+                                </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    $(document).ready(function() {
+        // Refresh button
+        $('#refreshBtn').click(function() {
+            location.reload();
+        });
+
+        // Auto-refresh every 10 seconds
+        setInterval(function() {
+            location.reload();
+        }, 10000);
+    });
+</script>
+{% endblock %}

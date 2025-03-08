@@ -9,6 +9,8 @@ from db_models import Database
 from curl_cffi import requests as curl_requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+import concurrent.futures
+from threading import Lock
 
 
 logger = logging.getLogger(__name__)
@@ -17,10 +19,18 @@ logger = logging.getLogger(__name__)
 class LinkWorker:
     def __init__(self):
         self.db = Database()
-        # Get proxies from hardcoded list
+        # Get proxies from HTTP_PROXIES environment variable
         self.proxies = self._get_proxies()
         if not self.proxies:
-            logger.warning("No proxies were loaded from the list.")
+            logger.warning("No proxies were loaded. Check HTTP_PROXIES environment variable.")
+
+            # Thread pool for concurrent processing
+        self.max_workers = int(os.environ.get('MAX_WORKER_THREADS', 5))
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        self.active_tasks = {}
+        self.task_lock = Lock()
+
+        logger.info(f"Initialized LinkWorker with {self.max_workers} worker threads")
 
     def _get_proxies(self):
         """Get proxies from HTTP_PROXIES environment variable"""
@@ -228,26 +238,34 @@ class LinkWorker:
 
     def access_link(self, link_id, url):
         """Access a link and follow the download button with proxy rotation"""
-        # Get proxies that haven't been used for this link in the current cycle
-        unused_proxies = self.db.get_unused_proxies_for_link(link_id)
-
-        # Choose a proxy
-        proxy = None
-        proxies = None
-
-        if unused_proxies:
-            proxy = random.choice(unused_proxies)
-            proxies = {"http": proxy, "https": proxy}
-            logger.info(f"Using unused proxy {proxy} for link ID {link_id}")
-        elif self.proxies:
-            # If all proxies have been used, reuse one of the existing proxies
-            proxy = random.choice(self.proxies)
-            proxies = {"http": proxy, "https": proxy}
-            logger.warning(f"All proxies have been used for link ID {link_id} in this cycle. Reusing {proxy}")
-        else:
-            logger.warning(f"No proxies available for link ID {link_id}. Using direct connection.")
-
         try:
+            logger.info(f"Accessing link {url} (ID: {link_id})")
+
+            # Get unused proxies for this link (with 24 hour cooldown)
+            unused_proxies = self.db.get_unused_proxies_for_link(link_id, self.proxies, 24)
+
+            # Choose a proxy
+            proxy = None
+            proxies = None
+
+            if unused_proxies:
+                proxy = random.choice(unused_proxies)
+                proxies = {"http": proxy, "https": proxy}
+                logger.info(f"Using proxy {proxy} for link ID {link_id}")
+            elif self.proxies:
+                # If all proxies have been used, reuse one of the existing proxies
+                proxy = random.choice(self.proxies)
+                proxies = {"http": proxy, "https": proxy}
+                logger.warning(
+                    f"All proxies have been used for link ID {link_id} within cooldown period. Reusing {proxy}")
+            else:
+                logger.warning(f"No proxies available for link ID {link_id}. Using direct connection.")
+
+                # Record the proxy usage
+            if proxy:
+                self.db.record_proxy_usage(link_id, proxy)
+
+                # Actual link access code
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
                 "Accept": "*/*",
@@ -346,6 +364,9 @@ class LinkWorker:
             self.db.log_access(link_id, proxy, response.status_code)
             logger.info(f"Successfully accessed download link for {url}, status code: {response.status_code}")
 
+            # After successful access, increment the view count
+            self.db.increment_link_views(link_id)
+
             return True
         except Exception as e:
             logger.error(f"Error accessing {url}: {e}")
@@ -353,33 +374,53 @@ class LinkWorker:
             return False
 
     def process_pending_accesses(self):
-        """Check and process any links that need to be accessed now"""
+        """Process all links and perform any pending accesses"""
         try:
+            logger.info("Starting to process pending accesses")
             active_links = self.db.get_active_links()
             now = datetime.now()
+
+            # Check for completed tasks and remove them
+            with self.task_lock:
+                completed_tasks = [task_id for task_id, future in self.active_tasks.items()
+                                   if future.done()]
+                for task_id in completed_tasks:
+                    # Get result to ensure any exceptions are logged
+                    try:
+                        self.active_tasks[task_id].result()
+                    except Exception as e:
+                        logger.error(f"Task {task_id} failed: {e}")
+                        # Remove the completed task
+                    del self.active_tasks[task_id]
 
             for link in active_links:
                 # Only process links that haven't completed their 100 accesses for the current cycle
                 if link['current_period_views'] < 100:
-                    # Schedule accesses if not already done
-                    # In a real application, this would be persisted in the database
-                    # For simplicity, we're calculating on the fly here
+                    # Calculate access times if not already done
                     start_date = datetime.strptime(link['current_cycle_start'], '%Y-%m-%d %H:%M:%S.%f')
                     end_date = datetime.strptime(link['current_cycle_end'], '%Y-%m-%d %H:%M:%S.%f')
 
                     # Calculate access times for this cycle
                     access_times = self._calculate_access_times(start_date, end_date)
 
-                    # Find the next scheduled access (the first one that's after the current views count)
+                    # Find the next scheduled access
                     if link['current_period_views'] < len(access_times):
                         next_access_time = access_times[link['current_period_views']]
 
                         # If it's time to access the link
                         if next_access_time <= now:
-                            logger.info(
-                                f"Time to access link {link['url']} (ID: {link['id']}), views: {link['current_period_views']} in cycle {link['current_cycle']}")
-                            self.access_link(link['id'], link['url'])
+                            # Check if we have an active task for this link
+                            task_id = f"link_{link['id']}_{link['current_period_views']}"
 
-            logger.info("Completed processing pending accesses")
+                            with self.task_lock:
+                                if task_id not in self.active_tasks:
+                                    logger.info(f"Scheduling access for link {link['url']} (ID: {link['id']}), "
+                                                f"views: {link['current_period_views']} in cycle {link['current_cycle']}")
+
+                                    # Submit the task to the thread pool
+                                    future = self.executor.submit(self.access_link, link['id'], link['url'])
+                                    self.active_tasks[task_id] = future
+
+            logger.info(f"Completed scheduling pending accesses. Active tasks: {len(self.active_tasks)}")
         except Exception as e:
             logger.error(f"Error in process_pending_accesses: {e}")
