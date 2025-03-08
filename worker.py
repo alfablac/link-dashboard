@@ -40,20 +40,18 @@ class LinkWorker:
             logger.error(f"Error parsing HTTP_PROXIES: {e}")
             return []
 
-    def _calculate_access_times(self, start_date, end_date, total_accesses=100):
+    def calculate_access_times(self, start_date, end_date, total_accesses=100):
         """
-        Calculate access times using an exponential function
+        Calculate access times using a quadratic function
         More frequent at the beginning, less frequent at the end
         """
         total_seconds = (end_date - start_date).total_seconds()
 
-        # Generate exponentially distributed points
+        # Generate quadratically distributed points
         times = []
         for i in range(total_accesses):
-            # Exponential distribution factor (higher means more skewed to beginning)
-            factor = 3.0
             x = i / (total_accesses - 1)  # Normalized index (0 to 1)
-            y = (1 - math.exp(-factor * (1 - x))) / (1 - math.exp(-factor))
+            y = x ** 3  # Quadratic function (smaller at beginning, larger at end)
 
             # Calculate seconds from start
             seconds_from_start = y * total_seconds
