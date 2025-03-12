@@ -50,7 +50,7 @@ class LinkWorker:
             logger.error(f"Error parsing HTTP_PROXIES: {e}")
             return []
 
-    def _calculate_access_times(self, start_date, end_date, total_accesses=100):
+    def _calculate_access_times(self, start_date, end_date, total_accesses=120):
         """
         Calculate access times using a quadratic function
         More frequent at the beginning, less frequent at the end
@@ -395,7 +395,7 @@ class LinkWorker:
 
             for link in active_links:
                 # Only process links that haven't completed their 100 accesses for the current cycle
-                if link['current_period_views'] < 100:
+                if link['current_period_views'] < 120:
                     # Calculate access times if not already done
                     start_date = datetime.strptime(link['current_cycle_start'], '%Y-%m-%d %H:%M:%S.%f')
                     end_date = datetime.strptime(link['current_cycle_end'], '%Y-%m-%d %H:%M:%S.%f')

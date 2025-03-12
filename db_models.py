@@ -78,7 +78,7 @@ class Database:
                 cursor.execute("ALTER TABLE links ADD COLUMN current_cycle_end TIMESTAMP")
                 # Update existing records
                 cursor.execute(
-                    "UPDATE links SET current_cycle_end = datetime(date_added, '+45 days') WHERE current_cycle_end IS NULL")
+                    "UPDATE links SET current_cycle_end = datetime(date_added, '+60 days') WHERE current_cycle_end IS NULL")
                 logger.info("Added current_cycle_end column to links table")
 
                 # End of existing column checks
@@ -186,7 +186,7 @@ class Database:
             cursor = conn.cursor()
 
             now = datetime.now()
-            cycle_end = now + timedelta(days=45)
+            cycle_end = now + timedelta(days=60)
 
             cursor.execute(
                 "INSERT INTO links (url, date_added, current_cycle_start, current_cycle_end, current_cycle) VALUES (?, ?, ?, ?, ?)",
@@ -254,7 +254,7 @@ class Database:
                 new_views = current_views + 1
 
                 # Check if we've completed all 100 views for this cycle
-                if new_views >= 100:
+                if new_views >= 120:
                     # When reaching 100 views, mark cycle as completed but keep the end date
                     cursor.execute("""  
                         UPDATE links   
@@ -347,7 +347,7 @@ class Database:
             for link in links_to_update:
                 new_cycle = link['current_cycle'] + 1
                 new_cycle_start = datetime.strptime(link['current_cycle_end'], '%Y-%m-%d %H:%M:%S.%f')
-                new_cycle_end = new_cycle_start + timedelta(days=45)
+                new_cycle_end = new_cycle_start + timedelta(days=60)
 
                 cursor.execute('''  
                 UPDATE links   
