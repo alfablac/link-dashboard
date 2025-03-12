@@ -182,7 +182,7 @@
         });
 
         // Force run button click
-        $('.force-run-btn').click(function() {
+        $(document).on('click', '.force-run-btn', function() {
             var btn = $(this);
             var linkId = btn.closest('tr').data('link-id');
             var filename = btn.closest('tr').find('td:eq(1)').text().trim();
