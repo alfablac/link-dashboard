@@ -79,7 +79,7 @@
                                             {% elif link.current_period_views < 66 %}bg-warning
                                             {% else %}bg-success{% endif %}"
                                             role="progressbar"
-                                            style="width: {{ link.current_period_views }}%;"
+                                            style="width: {{ (link.current_period_views / 120) * 100 }}%;"
                                             aria-valuenow="{{ link.current_period_views }}"
                                             aria-valuemin="0" aria-valuemax="120">
                                             {{ link.current_period_views }}%
